@@ -80,6 +80,23 @@ def slugify(text: str, max_len: int = 50) -> str:
     return (s or "memory")[:max_len]
 
 
+# Markdown noise that must never leak into a title/description (would break the
+# YAML frontmatter and produce ugly slugs/index lines).
+_MD_NOISE_RE = re.compile(r"[*_`#>]+|^\s*[-*•]\s+|^\s*\d+\.\s+", re.MULTILINE)
+
+
+def clean_line(text: str, max_len: int = 100) -> str:
+    """Collapse to a single clean line: strip markdown, fold whitespace, trim.
+
+    Titles and the index hook are written verbatim into YAML frontmatter and
+    MEMORY.md, so an embedded newline or list marker corrupts both. This makes
+    any string safe to embed.
+    """
+    s = _MD_NOISE_RE.sub(" ", text or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:max_len]
+
+
 @dataclass
 class MemoryRecord:
     """A single durable memory."""
@@ -108,11 +125,13 @@ class MemoryRecord:
         if self.provenance not in VALID_PROVENANCE:
             self.provenance = "inferred"
         self.confidence = min(max(float(self.confidence), 0.0), 1.0)
-        self.title = (self.title or "").strip()[:100]
+        self.title = clean_line(self.title, 100) or "Untitled"
         if not self.description:
             # First sentence / line of content makes a decent index hook.
             first = re.split(r"(?<=[.!?])\s|\n", self.content.strip(), maxsplit=1)[0]
-            self.description = first.strip()[:160]
+            self.description = clean_line(first, 160)
+        else:
+            self.description = clean_line(self.description, 160)
 
     # --- trust / decay (faithful to memanto core.py) -----------------------
 

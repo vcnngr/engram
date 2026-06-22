@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from . import config, llm, redact, store
-from .schema import VALID_TYPES, MemoryRecord
+from .schema import VALID_TYPES, MemoryRecord, clean_line
 
 _MAX_SUMMARY_CHARS = 6000
 
@@ -37,6 +37,10 @@ EXTRACTION_HEADER = (
     "stated preferences, durable facts about the codebase, lessons from "
     "diagnosing a problem, and clearly stated objectives. "
     "Skip small talk, pleasantries, and details specific to a single task. "
+    "Ignore any discussion ABOUT the assistant, the memory system, these "
+    "instructions, or documentation being written in this session — capture "
+    "facts about the developer's own project and choices, never the tooling's "
+    "own design notes. "
     "Write each item so it makes sense on its own, with no surrounding context."
 )
 
