@@ -50,6 +50,34 @@ EXTRACTION_FOOTER = (
 )
 
 
+# OpenAI structured-output schema (best-effort; tolerant parser is the safety net).
+MEMORY_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "memories": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["decision", "instruction", "preference", "fact",
+                                 "learning", "error", "goal", "context"],
+                    },
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["type", "title", "content", "confidence"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["memories"],
+    "additionalProperties": False,
+}
+
+
 def build_extraction_question(summary: str) -> str:
     summary = (summary or "").strip()[-_MAX_SUMMARY_CHARS:]
     return (
@@ -129,6 +157,7 @@ def _llm_extract(summary: str) -> list[dict[str, Any]]:
             {"role": "user", "content": EXTRACTION_FOOTER},
         ],
         temperature=0.0,
+        json_schema=MEMORY_JSON_SCHEMA if config.LLM_JSON_SCHEMA else None,
     )
     if not answer:
         return []
@@ -139,10 +168,25 @@ _FENCE_RE = re.compile(r"```(?:json)?", re.IGNORECASE)
 
 
 def parse_llm_memories(answer_text: str) -> list[dict[str, Any]]:
-    """Parse the LLM's JSON-array answer into validated memory dicts."""
+    """Parse the LLM answer into validated memory dicts.
+
+    Tolerant of: bare JSON array, an object ``{"memories": [...]}`` (structured
+    output), code fences, and leading/trailing prose. Invalid items are dropped.
+    """
     if not answer_text:
         return []
     cleaned = _FENCE_RE.sub("", answer_text).strip()
+
+    # Structured-output object form: {"memories": [...]}.
+    obj_start, obj_end = cleaned.find("{"), cleaned.rfind("}")
+    if obj_start != -1 and obj_end > obj_start:
+        try:
+            obj = json.loads(cleaned[obj_start : obj_end + 1])
+            if isinstance(obj, dict) and isinstance(obj.get("memories"), list):
+                return [m for m in map(_coerce_memory, obj["memories"]) if m]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     start, end = cleaned.find("["), cleaned.rfind("]")
     if start == -1 or end == -1 or end <= start:
         return []

@@ -19,16 +19,31 @@ def chat(
     messages: list[dict[str, str]],
     temperature: float = 0.0,
     max_tokens: int = 1024,
+    json_schema: dict | None = None,
 ) -> str | None:
-    """POST /v1/chat/completions. Returns assistant text, or None on failure."""
+    """POST /v1/chat/completions. Returns assistant text, or None on failure.
+
+    When ``json_schema`` is given, request OpenAI structured output
+    (``response_format``). Servers that ignore the field still work — the
+    caller's parser is tolerant — so this is a best-effort quality nudge.
+    """
     url = config.LLM_ENDPOINT.rstrip("/") + "/v1/chat/completions"
-    payload = {
+    payload: dict = {
         "model": config.LLM_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if json_schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "memories",
+                "schema": json_schema,
+                "strict": True,
+            },
+        }
     headers = {"Content-Type": "application/json"}
     if config.LLM_API_KEY:
         headers["Authorization"] = f"Bearer {config.LLM_API_KEY}"
