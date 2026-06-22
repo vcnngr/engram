@@ -26,6 +26,7 @@ dev = ["ruff>=0.5", "mypy>=1.10"]
 
 [project.scripts]
 engram = "engram.cli:main"
+engram-mcp = "engram.mcp_server:main"
 
 [project.urls]
 Repository = "https://github.com/vcnngr/engram"

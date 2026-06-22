@@ -1,9 +1,15 @@
-"""Merge-safe installer for engram's Claude Code hooks.
+"""Merge-safe installers for engram across coding agents.
 
-Adds engram hooks to a settings.json WITHOUT disturbing existing hooks
-(GSD, graphify, sound, etc.): for each event we append our own matcher group,
-and skip if our command is already registered (idempotent). Always backs up
-the settings file first.
+The hook scripts are agent-agnostic (they read cwd/transcript from the payload
+and emit ``hookSpecificOutput.additionalContext``), so Claude Code and Codex
+reuse the same scripts under their respective event names. For every agent we
+append our own hook groups WITHOUT disturbing existing hooks, and skip if ours
+are already registered (idempotent). Settings files are backed up first.
+
+OpenCode has no SessionStart-style hook that can inject context, so there we
+install an MCP server entry + a plugin + an AGENTS.md instruction (prompt-driven
+recall/remember). Codex also gets an MCP entry (printed as a TOML snippet, since
+we don't hand-edit TOML).
 """
 
 from __future__ import annotations
@@ -14,16 +20,24 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent / "hooks"
+_MARKER = "engram/hooks/"  # any command containing this path is ours
 
-# event -> (script filename, matcher). matcher "" means "all".
-_HOOKS = {
+# Per-agent hook maps: event -> (script, matcher). The same scripts are reused;
+# only event names and matcher conventions differ between agents.
+_CLAUDE_HOOKS = {
     "SessionStart": ("session_start.py", ""),
     "PostCompact": ("post_compact.py", ""),
     "SessionEnd": ("session_end.py", ""),
     "PostToolUse": ("context_monitor.py", "Bash|Edit|Write|MultiEdit|Agent|Task"),
 }
+_CODEX_HOOKS = {
+    "SessionStart": ("session_start.py", "*"),
+    "PostCompact": ("post_compact.py", "*"),
+    "Stop": ("session_end.py", "*"),
+    "PostToolUse": ("context_monitor.py", "*"),
+}
 
-_MARKER = "engram/hooks/"  # any command containing this path is ours
+_AGENT_HOOKS = {"claude": _CLAUDE_HOOKS, "codex": _CODEX_HOOKS}
 
 
 def _command_for(script: str) -> str:
@@ -31,23 +45,35 @@ def _command_for(script: str) -> str:
     return f'"{py}" "{HOOKS_DIR / script}"'
 
 
+def _mcp_command() -> list[str]:
+    return [sys.executable or "python3", "-m", "engram.mcp_server"]
+
+
+# --------------------------------------------------------------------------- #
+# Hook installer (JSON settings: Claude Code settings.json, Codex hooks.json)
+# --------------------------------------------------------------------------- #
+
+
 def _already_present(groups: list, script: str) -> bool:
     needle = f"{_MARKER}{script}"
-    for group in groups:
-        for h in group.get("hooks", []):
-            if needle in h.get("command", ""):
-                return True
-    return False
+    return any(
+        needle in h.get("command", "")
+        for group in groups
+        for h in group.get("hooks", [])
+    )
 
 
-def default_settings_path(global_scope: bool = True) -> Path:
+def default_settings_path(agent: str = "claude", global_scope: bool = True) -> Path:
+    if agent == "codex":
+        return Path.home() / ".codex" / "hooks.json"
     if global_scope:
         return Path.home() / ".claude" / "settings.json"
     return Path.cwd() / ".claude" / "settings.json"
 
 
-def install(settings_path: Path, timeout: int = 15) -> list[str]:
-    """Merge engram hooks into ``settings_path``. Returns list of changes."""
+def install_hooks(settings_path: Path, agent: str = "claude", timeout: int = 15) -> list[str]:
+    """Merge engram hooks into a JSON settings/hooks file. Returns changes."""
+    hooks_map = _AGENT_HOOKS[agent]
     settings_path = Path(settings_path)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -61,8 +87,7 @@ def install(settings_path: Path, timeout: int = 15) -> list[str]:
 
     hooks = settings.setdefault("hooks", {})
     changes: list[str] = []
-
-    for event, (script, matcher) in _HOOKS.items():
+    for event, (script, matcher) in hooks_map.items():
         groups = hooks.setdefault(event, [])
         if _already_present(groups, script):
             continue
@@ -77,8 +102,7 @@ def install(settings_path: Path, timeout: int = 15) -> list[str]:
     return changes
 
 
-def uninstall(settings_path: Path) -> list[str]:
-    """Remove engram hook groups. Returns list of removed events."""
+def uninstall_hooks(settings_path: Path) -> list[str]:
     settings_path = Path(settings_path)
     if not settings_path.exists():
         return []
@@ -89,16 +113,113 @@ def uninstall(settings_path: Path) -> list[str]:
     hooks = settings.get("hooks", {})
     removed: list[str] = []
     for event in list(hooks.keys()):
-        kept = []
-        for group in hooks[event]:
-            ours = any(_MARKER in h.get("command", "") for h in group.get("hooks", []))
-            if ours:
-                removed.append(event)
-            else:
-                kept.append(group)
+        kept = [g for g in hooks[event]
+                if not any(_MARKER in h.get("command", "") for h in g.get("hooks", []))]
+        if len(kept) != len(hooks[event]):
+            removed.append(event)
         if kept:
             hooks[event] = kept
         else:
             del hooks[event]
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     return removed
+
+
+# Back-compat aliases (Claude Code default).
+def install(settings_path: Path, timeout: int = 15) -> list[str]:
+    return install_hooks(settings_path, agent="claude", timeout=timeout)
+
+
+def uninstall(settings_path: Path) -> list[str]:
+    return uninstall_hooks(settings_path)
+
+
+# --------------------------------------------------------------------------- #
+# OpenCode: MCP entry in opencode.json (mergeable JSON) + plugin + AGENTS.md
+# --------------------------------------------------------------------------- #
+
+
+def install_opencode_mcp(config_path: Path) -> list[str]:
+    """Merge an engram MCP server into opencode.json. Returns changes."""
+    config_path = Path(config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg: dict = {}
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+        shutil.copy2(config_path, config_path.with_suffix(".json.engram-bak"))
+    mcp = cfg.setdefault("mcp", {})
+    if "engram" in mcp:
+        return []
+    mcp["engram"] = {"type": "local", "command": _mcp_command(), "enabled": True}
+    config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    return ["mcp.engram"]
+
+
+OPENCODE_PLUGIN = '''\
+// engram memory plugin for OpenCode — distills the session on idle/compaction.
+// Recall is prompt-driven via AGENTS.md (the agent calls the engram MCP tools).
+import { spawn } from "node:child_process";
+
+function distill(kind) {
+  // Fire-and-forget; engram reads the transcript and writes durable memories.
+  try { spawn("engram", ["index"], { detached: true, stdio: "ignore" }).unref(); }
+  catch (_) {}
+}
+
+export default function engramPlugin() {
+  return {
+    hooks: {
+      "session.idle": async () => distill("idle"),
+      "session.compacted": async () => distill("compacted"),
+    },
+  };
+}
+'''
+
+AGENTS_MD_BLOCK = """\
+## Memory (engram)
+
+This project has a persistent memory store. Use the `engram` MCP tools:
+- At the start of a task, call `recall` with your task to load prior decisions,
+  conventions and preferences — do not re-ask what is already recorded.
+- When a durable decision, rule, preference or lesson is established, call
+  `remember` to persist it for future sessions.
+"""
+
+
+def write_opencode_plugin(project_dir: Path) -> Path:
+    d = Path(project_dir) / ".opencode" / "plugins"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "engram.ts"
+    path.write_text(OPENCODE_PLUGIN, encoding="utf-8")
+    return path
+
+
+def append_agents_md(project_dir: Path) -> Path | None:
+    """Append the engram instruction block to AGENTS.md if not already there."""
+    path = Path(project_dir) / "AGENTS.md"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if "Memory (engram)" in existing:
+        return None
+    sep = "" if not existing or existing.endswith("\n\n") else "\n\n"
+    path.write_text(existing + sep + AGENTS_MD_BLOCK, encoding="utf-8")
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# Config snippets to print (TOML we don't hand-edit)
+# --------------------------------------------------------------------------- #
+
+
+def codex_mcp_snippet() -> str:
+    cmd = _mcp_command()
+    args = ", ".join(json.dumps(a) for a in cmd[1:])
+    return (
+        "# Add to ~/.codex/config.toml :\n"
+        "[mcp_servers.engram]\n"
+        f"command = {json.dumps(cmd[0])}\n"
+        f"args = [{args}]\n"
+    )

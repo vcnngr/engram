@@ -46,11 +46,16 @@ adapted from memanto.
 ## Install
 
 ```bash
-python3 -m engram install          # merge hooks into ~/.claude/settings.json (global)
-python3 -m engram install --local  # or project .claude/settings.json
+engram install                      # Claude Code, global (~/.claude/settings.json)
+engram install --local              # Claude Code, project (.claude/settings.json)
+engram install --agent codex        # Codex: hooks.json + prints the config.toml MCP snippet
+engram install --agent opencode     # OpenCode: opencode.json MCP + plugin + AGENTS.md block
 ```
 The installer is merge-safe and idempotent: it appends its own hook groups and leaves existing
-hooks (GSD, graphify, …) untouched. A `.json.engram-bak` backup is written first.
+hooks (GSD, graphify, …) untouched. A `.engram-bak` backup is written first.
+
+All agents share **one** memory store per project, so a decision recorded in Claude Code is
+recalled in Codex and OpenCode.
 
 ## Configure (env)
 
@@ -77,12 +82,26 @@ python3 -m engram index
 python3 -m engram distill transcript.txt   # uses the LLM
 ```
 
-## Local LLM (MLX)
+## Local LLM
+
+Distillation needs any OpenAI-compatible chat endpoint — point `ENGRAM_LLM_ENDPOINT`
+at whatever you run. It's used only for async distillation, so a cold model load is
+invisible to the editor, and **recall needs no model at all**.
+
+Common local servers (all expose `/v1/chat/completions`):
 
 ```bash
-mlx_vlm.server --model <gemma-4-26b-a4b-mlx-repo> --port 8081
+# MLX — Apple Silicon only, fastest on Mac
+mlx_lm.server  --model <gemma-mlx-repo> --port 8081     # or mlx_vlm.server for VLMs
+
+# Ollama — cross-platform (macOS / Linux / Windows)
+ollama serve                                            # endpoint :11434/v1
+
+# llama.cpp / LM Studio / vLLM — also OpenAI-compatible
 ```
-Distillation is async, so a cold model load is invisible to the editor. Recall needs no model.
+
+Then e.g. `export ENGRAM_LLM_ENDPOINT=http://localhost:11434 ENGRAM_LLM_MODEL=qwen2.5`.
+A remote gateway or OpenRouter works the same way — only the env var changes.
 
 ## Tests
 
@@ -90,10 +109,29 @@ Distillation is async, so a cold model load is invisible to the editor. Recall n
 python3 -m unittest discover -s tests -v
 ```
 
+## MCP server
+
+engram ships a minimal MCP server (stdio, stdlib only — no `mcp` SDK dependency) exposing
+`remember`, `recall` and `answer` to any MCP client:
+
+```bash
+engram-mcp            # or: python3 -m engram.mcp_server
+```
+Codex and OpenCode are wired to it by `engram install --agent …`. Use it directly from any
+MCP-speaking tool by registering the command above.
+
+## How each agent is wired
+
+| Agent | Inject at start | Capture | Notes |
+|-------|-----------------|---------|-------|
+| Claude Code | SessionStart hook | PostToolUse monitor + SessionEnd | full lifecycle hooks |
+| Codex | SessionStart hook (`additionalContext`) | Stop + PostToolUse hooks | same scripts; + MCP for in-session tool calls |
+| OpenCode | AGENTS.md → agent calls `recall` (MCP) | plugin `session.idle`/`session.compacted` | no inject-capable hook, so prompt-driven recall |
+
 ## Roadmap
 
-- **Phase 2** — connect Codex (native hooks + MCP) and OpenCode (plugin) to the same memory via a
-  minimal MCP server.
+- **Phase 1 ✓** — Claude Code: file store, grep recall, distillation, anti-rot.
+- **Phase 2 ✓** — Codex + OpenCode on the same store via a stdlib MCP server + installers.
 - **Phase 3** — embeddings + open vector DB only if scale outgrows grep; document ingest via OCR.
 
 ## Credits

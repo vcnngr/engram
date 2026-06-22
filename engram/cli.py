@@ -91,20 +91,33 @@ def _cmd_status(_: argparse.Namespace) -> int:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
+    agent = args.agent
+    if agent == "opencode":
+        proj = Path.cwd()
+        mcp = install.install_opencode_mcp(proj / "opencode.json")
+        plugin = install.write_opencode_plugin(proj)
+        agents = install.append_agents_md(proj)
+        print(f"opencode.json mcp: {mcp or '(already present)'}")
+        print(f"plugin: {plugin}")
+        print(f"AGENTS.md: {agents or '(block already present)'}")
+        return 0
+
     path = Path(args.settings) if args.settings else install.default_settings_path(
-        global_scope=not args.local
+        agent=agent, global_scope=not args.local
     )
-    changes = install.install(path)
+    changes = install.install_hooks(path, agent=agent)
     print(f"settings: {path}")
     print("added:", changes or "(nothing — already installed)")
+    if agent == "codex":
+        print("\n" + install.codex_mcp_snippet())
     return 0
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     path = Path(args.settings) if args.settings else install.default_settings_path(
-        global_scope=not args.local
+        agent=args.agent, global_scope=not args.local
     )
-    removed = install.uninstall(path)
+    removed = install.uninstall_hooks(path)
     print(f"removed from {path}: {removed or '(nothing)'}")
     return 0
 
@@ -134,12 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show config + stats").set_defaults(func=_cmd_status)
 
-    ins = sub.add_parser("install", help="merge hooks into settings.json")
-    ins.add_argument("--local", action="store_true", help="project .claude instead of global")
+    ins = sub.add_parser("install", help="wire engram into a coding agent")
+    ins.add_argument("--agent", choices=["claude", "codex", "opencode"], default="claude")
+    ins.add_argument("--local", action="store_true", help="project scope instead of global")
     ins.add_argument("--settings", help="explicit settings.json path")
     ins.set_defaults(func=_cmd_install)
 
     uns = sub.add_parser("uninstall", help="remove engram hooks")
+    uns.add_argument("--agent", choices=["claude", "codex", "opencode"], default="claude")
     uns.add_argument("--local", action="store_true")
     uns.add_argument("--settings")
     uns.set_defaults(func=_cmd_uninstall)

@@ -1,0 +1,97 @@
+"""MCP server tests: drive the JSON-RPC stdio protocol directly (no real client).
+
+Tests the in-process handler (fast) plus a full subprocess round-trip over
+stdin/stdout to prove the wire protocol works end-to-end.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+from engram import mcp_server  # noqa: E402
+
+
+class TestHandler(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="engram_mcp_")
+        os.environ["ENGRAM_DIR"] = self.dir
+
+    def tearDown(self):
+        os.environ.pop("ENGRAM_DIR", None)
+
+    def test_initialize_echoes_protocol(self):
+        r = mcp_server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                               "params": {"protocolVersion": "2025-06-18"}})
+        self.assertEqual(r["result"]["protocolVersion"], "2025-06-18")
+        self.assertIn("tools", r["result"]["capabilities"])
+        self.assertEqual(r["result"]["serverInfo"]["name"], "engram")
+
+    def test_initialized_notification_no_response(self):
+        self.assertIsNone(mcp_server.handle(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}))
+
+    def test_tools_list(self):
+        r = mcp_server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = {t["name"] for t in r["result"]["tools"]}
+        self.assertEqual(names, {"remember", "recall", "answer"})
+
+    def test_remember_then_recall(self):
+        rem = mcp_server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                 "params": {"name": "remember", "arguments": {
+                                     "content": "Recall is grep, no vector DB.",
+                                     "type": "decision"}}})
+        self.assertFalse(rem["result"]["isError"])
+        rec = mcp_server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                 "params": {"name": "recall", "arguments": {
+                                     "query": "vector db"}}})
+        text = rec["result"]["content"][0]["text"]
+        self.assertIn("grep", text)
+
+    def test_unknown_tool_is_error(self):
+        r = mcp_server.handle({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                               "params": {"name": "nope", "arguments": {}}})
+        self.assertEqual(r["error"]["code"], -32602)
+
+    def test_unknown_method(self):
+        r = mcp_server.handle({"jsonrpc": "2.0", "id": 6, "method": "bogus/x"})
+        self.assertEqual(r["error"]["code"], -32601)
+
+
+class TestSubprocessRoundTrip(unittest.TestCase):
+    def test_full_stdio_session(self):
+        d = tempfile.mkdtemp(prefix="engram_mcp_sp_")
+        env = {**os.environ, "ENGRAM_DIR": d}
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "engram.mcp_server"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, cwd=str(REPO), env=env,
+        )
+        msgs = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "remember",
+                        "arguments": {"content": "Hooks must exit 0.", "type": "instruction"}}},
+        ]
+        out, _ = proc.communicate("\n".join(json.dumps(m) for m in msgs) + "\n", timeout=30)
+        responses = [json.loads(line) for line in out.splitlines() if line.strip()]
+        by_id = {r.get("id"): r for r in responses}
+        # initialize, tools/list, tools/call answered; notification got no response.
+        self.assertEqual(by_id[1]["result"]["serverInfo"]["name"], "engram")
+        self.assertEqual({t["name"] for t in by_id[2]["result"]["tools"]},
+                         {"remember", "recall", "answer"})
+        self.assertFalse(by_id[3]["result"]["isError"])
+        self.assertEqual(len(responses), 3)  # no response for the notification
+
+
+if __name__ == "__main__":
+    unittest.main()
