@@ -127,14 +127,15 @@ class TestDistill(unittest.TestCase):
 
 
 class TestLLMBackend(unittest.TestCase):
-    """claude-cli backend: dispatch + the anti-recursion kill-switch."""
+    """CLI backends (claude-cli, codex): dispatch + the anti-recursion kill-switch."""
 
     def setUp(self):
         import importlib
         from engram import config, llm
         self.config, self.llm, self._reload = config, llm, importlib.reload
         self._saved = {k: os.environ.get(k)
-                       for k in ("ENGRAM_LLM_BACKEND", "ENGRAM_DISABLE", "ENGRAM_CLAUDE_BIN")}
+                       for k in ("ENGRAM_LLM_BACKEND", "ENGRAM_DISABLE",
+                                 "ENGRAM_CLAUDE_BIN", "ENGRAM_CODEX_BIN")}
 
     def tearDown(self):
         for k, v in self._saved.items():
@@ -166,6 +167,29 @@ class TestLLMBackend(unittest.TestCase):
         self._reload(self.config)
         self._reload(self.llm)
         self.assertTrue(llm.available())  # sys.executable always exists
+
+    def test_disabled_blocks_codex_and_never_spawns(self):
+        # Same recursion-guard parity for the codex backend: disabled => no spawn.
+        llm = self._reload_with(ENGRAM_LLM_BACKEND="codex", ENGRAM_DISABLE="1")
+        self.assertFalse(llm.available())
+        self.assertIsNone(llm.chat([{"role": "user", "content": "hi"}]))
+
+    def test_codex_available_true_when_cli_present(self):
+        llm = self._reload_with(
+            ENGRAM_LLM_BACKEND="codex", ENGRAM_CODEX_BIN=sys.executable)
+        os.environ.pop("ENGRAM_DISABLE", None)
+        self._reload(self.config)
+        self._reload(self.llm)
+        self.assertTrue(llm.available())  # sys.executable always exists
+
+    def test_codex_available_false_when_cli_missing(self):
+        llm = self._reload_with(
+            ENGRAM_LLM_BACKEND="codex",
+            ENGRAM_CODEX_BIN="/nonexistent/codex-binary-xyz")
+        os.environ.pop("ENGRAM_DISABLE", None)
+        self._reload(self.config)
+        self._reload(self.llm)
+        self.assertFalse(llm.available())
 
 
 class TestDistillGate(unittest.TestCase):
@@ -209,6 +233,7 @@ class TestDistillGate(unittest.TestCase):
         # mechanism that lets one synced machine differ from the others).
         from engram import config
         saved_env = os.environ.pop("ENGRAM_LLM_BACKEND", None)
+        saved_codex_bin = os.environ.pop("ENGRAM_CODEX_BIN", None)
         d = tempfile.mkdtemp(prefix="ccmem_state_")
         saved = config.STATE_DIR
         try:
@@ -216,10 +241,18 @@ class TestDistillGate(unittest.TestCase):
             self.assertEqual(config.llm_backend(), "openai")  # default
             (Path(d) / "llm-backend").write_text("claude-cli\n", encoding="utf-8")
             self.assertEqual(config.llm_backend(), "claude-cli")
+            (Path(d) / "llm-backend").write_text("codex\n", encoding="utf-8")
+            self.assertEqual(config.llm_backend(), "codex")
+            # codex_bin honours the machine-local file too (no env var).
+            self.assertEqual(config.codex_bin(), "codex")  # default name
+            (Path(d) / "codex-bin").write_text("/opt/homebrew/bin/codex\n", encoding="utf-8")
+            self.assertEqual(config.codex_bin(), "/opt/homebrew/bin/codex")
         finally:
             config.STATE_DIR = saved
             if saved_env is not None:
                 os.environ["ENGRAM_LLM_BACKEND"] = saved_env
+            if saved_codex_bin is not None:
+                os.environ["ENGRAM_CODEX_BIN"] = saved_codex_bin
 
 
 class TestRedact(unittest.TestCase):

@@ -95,7 +95,8 @@ def llm_backend() -> str:
     """Distillation backend: env > machine-local file > "openai" default.
 
     "openai" = HTTP to LLM_ENDPOINT; "claude-cli" = shell out to the Claude CLI
-    in print mode (no endpoint, uses the CLI's own login — no API key).
+    in print mode; "codex" = shell out to the Codex CLI in exec mode. Both CLI
+    backends use the tool's own login — no endpoint, no API key.
     """
     val = os.environ.get("ENGRAM_LLM_BACKEND") or _local_override("llm-backend") or "openai"
     return val.strip().lower()
@@ -108,6 +109,15 @@ def claude_bin() -> str:
     run without the user's interactive shell, so PATH may be minimal.
     """
     return os.environ.get("ENGRAM_CLAUDE_BIN") or _local_override("claude-bin") or "claude"
+
+
+def codex_bin() -> str:
+    """Path/name of the Codex CLI for the codex backend.
+
+    Prefer an absolute path (set via env or the ``codex-bin`` state file): hooks
+    run without the user's interactive shell, so PATH may be minimal.
+    """
+    return os.environ.get("ENGRAM_CODEX_BIN") or _local_override("codex-bin") or "codex"
 
 INDEX_NAME = "MEMORY.md"
 # Live working-state snapshot (overwritten each checkpoint), for resuming after
