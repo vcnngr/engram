@@ -116,6 +116,10 @@ class MemoryRecord:
     contradiction_detected: bool = False
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
+    # The actual file this record was read from, if any. Set by the store on
+    # load so the index can link to the real file on disk rather than a name
+    # re-derived from the (mutable) title. Never serialized.
+    source_path: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         t = (self.type or "fact").lower()
@@ -169,7 +173,13 @@ class MemoryRecord:
     # --- serialization -----------------------------------------------------
 
     def filename(self) -> str:
-        return f"{self.type}_{slugify(self.title)}.md"
+        slug = slugify(self.title)
+        # Degenerate titles (empty or "Untitled") all collapse to the same slug
+        # and would clobber one another on disk; disambiguate with a short id so
+        # two title-less memories never share a filename.
+        if slug == "memory" or self.title == "Untitled":
+            slug = f"{slug}_{self.id[:8]}"
+        return f"{self.type}_{slug}.md"
 
     def to_markdown(self) -> str:
         tags = ", ".join(self.tags)
