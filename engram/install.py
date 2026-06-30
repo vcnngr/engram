@@ -153,7 +153,7 @@ def default_settings_path(agent: str = "claude", global_scope: bool = True) -> P
     if agent == "codex":
         return Path.home() / ".codex" / "hooks.json"
     if global_scope:
-        return Path.home() / ".claude" / "settings.json"
+        return config.claude_config_dir() / "settings.json"
     return Path.cwd() / ".claude" / "settings.json"
 
 

@@ -142,6 +142,20 @@ INDEX_NAME = "MEMORY.md"
 HANDOFF_NAME = "HANDOFF.md"
 
 
+def claude_config_dir() -> Path:
+    """Claude Code's config root for the *current* instance.
+
+    Honors CLAUDE_CONFIG_DIR so engram follows the same per-instance dirs used by
+    aliases like ``claude-work``/``claude-peo``/``claude-3sez`` (each of which
+    runs ``CLAUDE_CONFIG_DIR=~/.claude-<x> claude``). When unset, falls back to
+    the default ~/.claude. This keeps each instance's memory namespaced under its
+    own config dir instead of bleeding into the personal store.
+    """
+    return Path(
+        os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    ).expanduser()
+
+
 def encode_cwd(cwd: str | os.PathLike[str]) -> str:
     """Encode an absolute path the way Claude Code names project dirs."""
     return str(Path(cwd).resolve()).replace("/", "-")
@@ -150,15 +164,15 @@ def encode_cwd(cwd: str | os.PathLike[str]) -> str:
 def memory_dir(cwd: str | os.PathLike[str] | None = None) -> Path:
     """Resolve the memory directory for a given working directory.
 
-    Order: explicit ENGRAM_DIR env wins; otherwise derive from cwd.
+    Order: explicit ENGRAM_DIR env wins; otherwise derive from cwd under the
+    current instance's Claude config dir (CLAUDE_CONFIG_DIR-aware).
     """
     override = os.environ.get("ENGRAM_DIR")
     if override:
         return Path(override).expanduser()
     cwd = cwd or os.getcwd()
     return (
-        Path.home()
-        / ".claude"
+        claude_config_dir()
         / "projects"
         / encode_cwd(cwd)
         / "memory"
